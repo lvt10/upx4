@@ -1,0 +1,182 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from tensorflow.keras.models import load_model
+
+# Carregar o modelo treinado
+model = load_model('character_recognition_v1.keras')
+
+# Carregar o classificador em cascata
+plate_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_russian_plate_number.xml')
+
+# Função para detectar a placa
+def detect_plate(img, text=''):
+    plate_img = img.copy()
+    roi = img.copy()
+
+    plate_rect = plate_cascade.detectMultiScale(plate_img, scaleFactor=1.2, minNeighbors=5)
+    if len(plate_rect) == 0:
+        print("No plates detected.")
+        return img, None
+
+    for (x, y, w, h) in plate_rect:
+        roi_ = roi[y:y+h, x:x+w, :]
+        plate = roi[y:y+h, x:x+w, :]
+        cv2.rectangle(plate_img, (x+2, y), (x+w-3, y+h-5), (0, 0, 255), 3)
+
+    if text != '':
+        plate_img = cv2.putText(plate_img, text, (x+2, y-10), cv2.FONT_HERSHEY_TRIPLEX, 2, (0, 0, 255), 2)
+
+    return plate_img, plate
+
+# Função para exibir a imagem
+def display(img_, title=''):
+    img = cv2.cvtColor(img_, cv2.COLOR_BGR2RGB)
+    fig = plt.figure(figsize=(10,6))
+    ax = plt.subplot(111)
+    ax.imshow(img)
+    plt.axis('off')
+    plt.title(title)
+    plt.show()
+
+# Função para encontrar contornos
+def find_contours(dimensions, img):
+    cntrs, _ = cv2.findContours(img.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    print(f"Number of contours detected: {len(cntrs)}")
+
+    contour_img = cv2.drawContours(img.copy(), cntrs, -1, (0,255,0), 2)
+    plt.imshow(contour_img, cmap='gray')
+    plt.title("Contours on License Plate")
+    plt.show()
+
+    lower_width = dimensions[0] * 0.5
+    upper_width = dimensions[1] * 1.5
+    lower_height = dimensions[2] * 0.5
+    upper_height = dimensions[3] * 1.5
+
+    cntrs = sorted(cntrs, key=cv2.contourArea, reverse=True)[:15]
+
+    x_cntr_list = []
+    img_res = []
+    for cntr in cntrs:
+        intX, intY, intWidth, intHeight = cv2.boundingRect(cntr)
+
+        if lower_width < intWidth < upper_width and lower_height < intHeight < upper_height:
+            print(f"Contour accepted with width: {intWidth}, height: {intHeight}")
+            x_cntr_list.append(intX)
+
+            char_copy = np.zeros((40,40,3))  # Atualizar para 3 canais e tamanho 40x40
+            char = img[intY:intY+intHeight, intX:intX+intWidth]
+            char = cv2.resize(char, (40, 40))  # Ajuste o tamanho conforme o esperado pelo modelo
+
+            cv2.rectangle(contour_img, (intX,intY), (intWidth+intX, intY+intHeight), (50,21,200), 2)
+            plt.imshow(contour_img, cmap='gray')
+
+            char = cv2.cvtColor(char, cv2.COLOR_BGR2RGB)  # Converter para RGB
+            char_copy[:, :, :] = char
+            img_res.append(char_copy)
+        else:
+            print(f"Contour rejected with width: {intWidth}, height: {intHeight}")
+
+    plt.show()
+
+    indices = sorted(range(len(x_cntr_list)), key=lambda k: x_cntr_list[k])
+    img_res_copy = [img_res[idx] for idx in indices]
+    img_res = np.array(img_res_copy)
+
+    return img_res
+
+# Função para segmentar os caracteres
+def segment_characters(image):
+    img_lp = cv2.resize(image, (333, 75))
+    img_gray_lp = cv2.cvtColor(img_lp, cv2.COLOR_BGR2GRAY)
+
+    _, img_binary_lp = cv2.threshold(img_gray_lp, 127, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
+    img_binary_lp = cv2.erode(img_binary_lp, kernel, iterations=1)
+    img_binary_lp = cv2.dilate(img_binary_lp, kernel, iterations=1)
+
+    LP_WIDTH = img_binary_lp.shape[0]
+    LP_HEIGHT = img_binary_lp.shape[1]
+
+    img_binary_lp[0:3,:] = 255
+    img_binary_lp[:,0:3] = 255
+    img_binary_lp[72:75,:] = 255
+    img_binary_lp[:,330:333] = 255
+
+    dimensions = [LP_WIDTH/8, LP_WIDTH/2, LP_HEIGHT/10, 2*LP_HEIGHT/3]
+    plt.imshow(img_binary_lp, cmap='gray')
+    plt.title("Binary Image for Contour Detection")
+    plt.show()
+
+    cv2.imwrite('contour.jpg', img_binary_lp)
+
+    char_list = find_contours(dimensions, img_binary_lp)
+
+    return char_list
+
+# Função para prever caracteres
+def predict_characters(char_list):
+    labels = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    predictions = []
+
+    for char_img in char_list:
+        char_img = char_img.astype('float32') / 255.0
+        char_img = np.expand_dims(char_img, axis=0)
+
+        prediction = model.predict(char_img)
+        predicted_class = np.argmax(prediction, axis=1)[0]
+        predictions.append(labels[predicted_class])
+
+    return ''.join(predictions)
+import matplotlib.pyplot as plt
+import numpy as np
+import cv2
+import tensorflow as tf
+from sklearn.metrics import f1_score
+from tensorflow.keras import optimizers
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.layers import Dense, Flatten, MaxPooling2D, Dropout, Conv2D
+!wget https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_russian_plate_number.xml -O license_plate.xml
+
+!apt-get update
+!pip install tensorflow opencv-python 
+
+# Loads the data required for detecting the license plates from cascade classifier.
+plate_cascade = cv2.CascadeClassifier('./license_plate.xml')
+
+
+
+
+
+# Teste da função de detecção
+img = cv2.imread('./placa.jpeg')
+display(img, 'input image')
+
+# Detectar a placa
+output_img, plate = detect_plate(img)
+
+if plate is not None:
+    display(output_img, 'detected license plate in the input image')
+    display(plate, 'extracted license plate from the image')
+
+    # Segmentar os caracteres
+    char = segment_characters(plate)
+
+    if len(char) > 0:
+        # Prever os caracteres
+        plate_number = predict_characters(char)
+        print(f"Plate number: {plate_number}")
+
+        # Exibir os caracteres segmentados
+        for i in range(len(char)):
+            plt.subplot(1, len(char), i+1)
+            plt.imshow(char[i])
+            plt.axis('off')
+        plt.show()
+    else:
+        print("No characters were detected.")
+else:
+    print("No plate detected, skipping character segmentation.")
